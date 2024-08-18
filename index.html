@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Extract Frames and Audio from MP4</title>
+    <title>Extract Frames from MP4</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@latest/dist/ffmpeg.min.js"></script>
 </head>
 <body>
     <input type="file" id="fileInput" accept="video/mp4">
-    <video id="video" controls style="display:none;"></video>
+    <video id="video" style="display:none;" muted></video>
     <canvas id="canvas"></canvas>
     <button id="processVideo">Extract Frames and Audio</button>
     <button id="downloadZip" style="display:none;">Download ZIP</button>
@@ -30,12 +30,14 @@
 
         fileInput.addEventListener('change', handleFileSelect);
 
-        async function handleFileSelect(event) {
+        function handleFileSelect(event) {
             const file = event.target.files[0];
             if (file) {
                 video.src = URL.createObjectURL(file);
                 video.addEventListener('loadeddata', () => {
-                    video.play();
+                    // Ensure the video is not playing or visible
+                    video.pause();
+                    video.currentTime = 0;
                 });
             }
         }
@@ -44,24 +46,21 @@
             if (video.readyState >= 2) { // Check if video metadata is loaded
                 canvas.width = video.videoWidth;
                 canvas.height = video.videoHeight;
-                
-                // Extract frames at 30 FPS
+
                 const fps = 30;
                 const interval = 1000 / fps;
                 const duration = video.duration;
                 const totalFrames = Math.floor(duration * fps);
-                
+
                 statusDiv.textContent = `Extracting ${totalFrames} frames...`;
-                
+
+                // Process frames in parallel
+                const framePromises = [];
                 for (let i = 0; i < totalFrames; i++) {
-                    video.currentTime = i / fps;
-                    await new Promise(resolve => video.addEventListener('seeked', resolve, { once: true }));
-                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                    
-                    // Convert canvas to PNG data URL and store in frames array
-                    const imgData = canvas.toDataURL('image/png');
-                    frames.push(imgData);
+                    const currentTime = i / fps;
+                    framePromises.push(extractFrameAtTime(currentTime, i));
                 }
+                await Promise.all(framePromises);
 
                 // Extract audio using ffmpeg.js
                 const { createFFmpeg, fetchFile } = FFmpeg;
@@ -79,6 +78,19 @@
             }
         });
 
+        async function extractFrameAtTime(currentTime, index) {
+            return new Promise((resolve) => {
+                video.currentTime = currentTime;
+                video.addEventListener('seeked', function onSeeked() {
+                    video.removeEventListener('seeked', onSeeked);
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    const imgData = canvas.toDataURL('image/png');
+                    frames[index] = imgData;
+                    resolve();
+                });
+            });
+        }
+
         downloadZipButton.addEventListener('click', async () => {
             if (frames.length === 0) {
                 alert('No frames to download.');
@@ -89,11 +101,10 @@
             const folder = zip.folder("frames");
 
             // Add frames to ZIP
-            for (let i = 0; i < frames.length; i++) {
-                const imgData = frames[i];
+            frames.forEach((imgData, i) => {
                 const data = imgData.replace(/^data:image\/png;base64,/, '');
                 folder.file(`frame${i + 1}.png`, data, { base64: true });
-            }
+            });
 
             // Add audio to ZIP
             zip.file('audio.mp3', audioBlob);
