@@ -3,31 +3,89 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Extract Frames from MP4</title>
+    <title>Fast Frame & Audio Extractor</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@latest/dist/ffmpeg.min.js"></script>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: #f4f4f4;
+            color: #333;
+            text-align: center;
+            margin: 20px;
+        }
+        input, button {
+            padding: 10px 20px;
+            font-size: 16px;
+            margin: 10px;
+            border-radius: 5px;
+            border: none;
+            cursor: pointer;
+        }
+        input[type="file"] {
+            background-color: #2980b9;
+            color: white;
+        }
+        button {
+            background-color: #27ae60;
+            color: white;
+        }
+        button:disabled {
+            background-color: #95a5a6;
+            cursor: not-allowed;
+        }
+        #progressWrapper {
+            width: 100%;
+            background-color: #ddd;
+            border-radius: 5px;
+            margin: 20px auto;
+            padding: 3px;
+            max-width: 600px;
+        }
+        #progressBar {
+            width: 0;
+            height: 20px;
+            background-color: #27ae60;
+            border-radius: 5px;
+        }
+        #status {
+            margin-top: 20px;
+            font-size: 18px;
+        }
+    </style>
 </head>
 <body>
+    <h1>Fast MP4 Frame & Audio Extractor</h1>
     <input type="file" id="fileInput" accept="video/mp4">
-    <video id="video" style="display:none;" muted></video>
-    <canvas id="canvas"></canvas>
-    <button id="processVideo">Extract Frames and Audio</button>
-    <button id="downloadZip" style="display:none;">Download ZIP</button>
+    <br>
+    <button id="processVideo" disabled>Extract Frames and Audio</button>
+    <br>
+    <div id="progressWrapper" style="display:none;">
+        <div id="progressBar"></div>
+    </div>
     <div id="status"></div>
+    <br>
+    <button id="downloadZip" style="display:none;">Download ZIP</button>
+
+    <canvas id="canvas" style="display:none;"></canvas>
+    <video id="video" style="display:none;" muted></video>
 
     <script>
         const fileInput = document.getElementById('fileInput');
+        const processVideoButton = document.getElementById('processVideo');
+        const progressWrapper = document.getElementById('progressWrapper');
+        const progressBar = document.getElementById('progressBar');
+        const statusDiv = document.getElementById('status');
+        const downloadZipButton = document.getElementById('downloadZip');
         const video = document.getElementById('video');
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
-        const processVideoButton = document.getElementById('processVideo');
-        const downloadZipButton = document.getElementById('downloadZip');
-        const statusDiv = document.getElementById('status');
 
         let frames = [];
         let audioBlob;
-
+        let totalFrames = 0;
+        
         fileInput.addEventListener('change', handleFileSelect);
 
         function handleFileSelect(event) {
@@ -35,47 +93,49 @@
             if (file) {
                 video.src = URL.createObjectURL(file);
                 video.addEventListener('loadeddata', () => {
-                    // Ensure the video is not playing or visible
                     video.pause();
-                    video.currentTime = 0;
+                    processVideoButton.disabled = false;
                 });
             }
         }
 
         processVideoButton.addEventListener('click', async () => {
-            if (video.readyState >= 2) { // Check if video metadata is loaded
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
+            processVideoButton.disabled = true;
+            progressWrapper.style.display = 'block';
+            statusDiv.textContent = 'Preparing extraction...';
 
-                const fps = 30;
-                const interval = 1000 / fps;
-                const duration = video.duration;
-                const totalFrames = Math.floor(duration * fps);
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
 
-                statusDiv.textContent = `Extracting ${totalFrames} frames...`;
+            const fps = 30;
+            const duration = video.duration;
+            totalFrames = Math.floor(duration * fps);
 
-                // Process frames in parallel
-                const framePromises = [];
-                for (let i = 0; i < totalFrames; i++) {
-                    const currentTime = i / fps;
-                    framePromises.push(extractFrameAtTime(currentTime, i));
-                }
-                await Promise.all(framePromises);
+            statusDiv.textContent = `Extracting ${totalFrames} frames...`;
+            const framePromises = [];
 
-                // Extract audio using ffmpeg.js
-                const { createFFmpeg, fetchFile } = FFmpeg;
-                const ffmpeg = createFFmpeg({ log: true });
-                await ffmpeg.load();
-                ffmpeg.FS('writeFile', 'input.mp4', await fetchFile(file));
-                await ffmpeg.run('-i', 'input.mp4', '-q:a', '0', '-map', 'a', 'output.mp3');
-                audioBlob = new Blob([ffmpeg.FS('readFile', 'output.mp3')], { type: 'audio/mpeg' });
-
-                // Show download button
-                downloadZipButton.style.display = 'block';
-                statusDiv.textContent = `Extraction complete. ${frames.length} frames and audio ready.`;
-            } else {
-                alert('Video is not ready');
+            // Process frames in parallel and update progress
+            for (let i = 0; i < totalFrames; i++) {
+                const currentTime = i / fps;
+                framePromises.push(extractFrameAtTime(currentTime, i));
             }
+            
+            // Update progress bar as frames are processed
+            await Promise.all(framePromises.map((promise, index) =>
+                promise.then(() => updateProgress(index + 1))
+            ));
+
+            // Extract audio using ffmpeg.js
+            const { createFFmpeg, fetchFile } = FFmpeg;
+            const ffmpeg = createFFmpeg({ log: false });
+            await ffmpeg.load();
+            const file = fileInput.files[0];
+            ffmpeg.FS('writeFile', 'input.mp4', await fetchFile(file));
+            await ffmpeg.run('-i', 'input.mp4', '-q:a', '0', '-map', 'a', 'output.mp3');
+            audioBlob = new Blob([ffmpeg.FS('readFile', 'output.mp3')], { type: 'audio/mpeg' });
+
+            statusDiv.textContent = `Extraction complete. ${frames.length} frames and audio ready.`;
+            downloadZipButton.style.display = 'block';
         });
 
         async function extractFrameAtTime(currentTime, index) {
@@ -89,6 +149,11 @@
                     resolve();
                 });
             });
+        }
+
+        function updateProgress(frameIndex) {
+            const progress = (frameIndex / totalFrames) * 100;
+            progressBar.style.width = `${progress}%`;
         }
 
         downloadZipButton.addEventListener('click', async () => {
